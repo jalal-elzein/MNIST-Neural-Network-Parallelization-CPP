@@ -1,12 +1,3 @@
-// Software: Training Artificial Neural Network for MNIST database
-// Author: Hy Truong Son
-// Major: BSc. Computer Science
-// Class: 2013 - 2016
-// Institution: Eotvos Lorand University
-// Email: sonpascal93@gmail.com
-// Website: http://people.inf.elte.hu/hytruongson/
-// Copyright 2015 (c). All rights reserved.
-
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -18,6 +9,7 @@
 #include <set>
 #include <iterator>
 #include <algorithm>
+#include <curand_kernel.h>
 
 using namespace std;
 
@@ -34,19 +26,11 @@ const string model_fn = "model-neural-network.dat";
 const string report_fn = "training-report.dat";
 
 // Number of training samples
-const int nTraining = 600;
+const int nTraining = 60000;
 
 // Image size in MNIST database
 const int width = 28;
 const int height = 28;
-
-// n1 = Number of input neurons
-// n2 = Number of hidden neurons
-// n3 = Number of output neurons
-// epochs = Number of iterations for back-propagation algorithm
-// learning_rate = Learing rate
-// momentum = Momentum (heuristics to optimize back-propagation algorithm)
-// epsilon = Epsilon, no more iterations if the learning error is smaller than epsilon
 
 const int n1 = width * height; // = 784, without bias neuron 
 const int n2 = 128; 
@@ -56,7 +40,6 @@ const double learning_rate = 1e-3;
 const double momentum = 0.9;
 const double epsilon = 1e-3;
 
-// From layer 1 to layer 2. Or: Input layer - Hidden layer
 double *w1[n1 + 1], *delta1[n1 + 1], *out1;
 
 // From layer 2 to layer 3. Or; Hidden layer - Output layer
@@ -73,10 +56,6 @@ int d[width + 1][height + 1];
 ifstream image;
 ifstream label;
 ofstream report;
-
-// +--------------------+
-// | About the software |
-// +--------------------+
 
 void about() {
 	// Details
@@ -98,121 +77,152 @@ void about() {
 	cout << "No. training sample: " << nTraining << endl << endl;
 }
 
-// +-----------------------------------+
-// | Memory allocation for the network |
-// +-----------------------------------+
-
-void init_array() {
-	// Layer 1 - Layer 2 = Input layer - Hidden layer
-    for (int i = 1; i <= n1; ++i) {
-        w1[i] = new double [n2 + 1];
-        delta1[i] = new double [n2 + 1];
-    }
-    
-    out1 = new double [n1 + 1];
-
-	// Layer 2 - Layer 3 = Hidden layer - Output layer
-    for (int i = 1; i <= n2; ++i) {
-        w2[i] = new double [n3 + 1];
-        delta2[i] = new double [n3 + 1];
-    }
-    
-    in2 = new double [n2 + 1];
-    out2 = new double [n2 + 1];
-    theta2 = new double [n2 + 1];
-
-	// Layer 3 - Output layer
-    in3 = new double [n3 + 1];
-    out3 = new double [n3 + 1];
-    theta3 = new double [n3 + 1];
-    
-    // Initialization for weights from Input layer to Hidden layer
-    for (int i = 1; i <= n1; ++i) {
-        for (int j = 1; j <= n2; ++j) {
-            int sign = rand() % 2;
-
-            // Another strategy to randomize the weights - quite good 
-            // w1[i][j] = (double)(rand() % 10 + 1) / (10 * n2);
-            
-            w1[i][j] = (double)(rand() % 6) / 10.0;
-            if (sign == 1) {
-				w1[i][j] = - w1[i][j];
-			}
+__global__ void init_weights(double *w, int n, int m) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < n && col < m) {
+        curandState_t state;
+        curand_init((unsigned long long) clock() + row + col, 0, 0, &state);
+        int sign = curand(&state) % 2;
+        float rand_num = curand_uniform(&state);
+        w[row * m + col] = (double)(rand_num * 0.6);
+        if (sign == 1) {
+            w[row * m + col] = - w[row * m + col];
         }
-	}
-	
-	// Initialization for weights from Hidden layer to Output layer
-    for (int i = 1; i <= n2; ++i) {
-        for (int j = 1; j <= n3; ++j) {
-            int sign = rand() % 2;
-			
-			// Another strategy to randomize the weights - quite good 
-            // w2[i][j] = (double)(rand() % 6) / 10.0;
-
-            w2[i][j] = (double)(rand() % 10 + 1) / (10.0 * n3);
-            if (sign == 1) {
-				w2[i][j] = - w2[i][j];
-			}
-        }
-	}
+    }
 }
 
-// +------------------+
-// | Sigmoid function |
-// +------------------+
+void init_array() {
+    // Layer 1 - Layer 2 = Input layer - Hidden layer
+    cudaMalloc((void**)&w1, n1 * (n2 + 1) * sizeof(double));
+    cudaMalloc((void**)&delta1, n1 * (n2 + 1) * sizeof(double));
+    cudaMalloc((void**)&out1, (n1 + 1) * sizeof(double));
+    
+    // Layer 2 - Layer 3 = Hidden layer - Output layer
+    cudaMalloc((void**)&w2, n2 * (n3 + 1) * sizeof(double));
+    cudaMalloc((void**)&delta2, n2 * (n3 + 1) * sizeof(double));
+    cudaMalloc((void**)&in2, (n2 + 1) * sizeof(double));
+    cudaMalloc((void**)&out2, (n2 + 1) * sizeof(double));
+    cudaMalloc((void**)&theta2, (n2 + 1) * sizeof(double));
+    
+    // Layer 3 - Output layer
+    cudaMalloc((void**)&in3, (n3 + 1) * sizeof(double));
+    cudaMalloc((void**)&out3, (n3 + 1) * sizeof(double));
+    cudaMalloc((void**)&theta3, (n3 + 1) * sizeof(double));
 
+    dim3 blockDim(16, 16);
+    dim3 gridDim((n2 + blockDim.x - 1) / blockDim.x, (n1 + blockDim.y - 1) / blockDim.y);
+
+    init_weights<<<gridDim, blockDim>>>(w1, n1, n2 + 1);
+    init_weights<<<gridDim, blockDim>>>(delta1, n1, n2 + 1);
+    init_weights<<<1, n1>>>(out1, n1 + 1, 1);
+
+    gridDim = dim3((n3 + blockDim.x - 1) / blockDim.x, (n2 + blockDim.y - 1) / blockDim.y);
+
+    init_weights<<<gridDim, blockDim>>>
+}
+__global__ void init_weights_kernel(double *w1, double *w2, int n1, int n2, int n3)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (i < n1 && j < n2) {
+        int sign = rand() % 2;
+        w1[i * (n2+1) + j] = (double)(rand() % 6) / 10.0;
+        if (sign == 1) {
+            w1[i * (n2+1) + j] = - w1[i * (n2+1) + j];
+        }
+    }
+
+    if (i < n2 && j < n3) {
+        int sign = rand() % 2;
+        w2[i * (n3+1) + j] = (double)(rand() % 10 + 1) / (10.0 * n3);
+        if (sign == 1) {
+            w2[i * (n3+1) + j] = - w2[i * (n3+1) + j];
+        }
+    }
+}
+
+void init_array()
+{
+    // Allocate memory for weights and deltas
+    double *d_w1, *d_w2;
+    cudaMalloc(&d_w1, sizeof(double) * (n1+1) * (n2+1));
+    cudaMalloc(&d_w2, sizeof(double) * (n2+1) * (n3+1));
+
+    // Initialize weights in parallel
+    dim3 dimBlock(16, 16);
+    dim3 dimGrid(ceil(n1 / 16.0), ceil(n2 / 16.0));
+    init_weights_kernel<<<dimGrid, dimBlock>>>(d_w1, d_w2, n1, n2, n3);
+
+    // Copy weights to host memory
+    cudaMemcpy(w1, d_w1, sizeof(double) * (n1+1) * (n2+1), cudaMemcpyDeviceToHost);
+    cudaMemcpy(w2, d_w2, sizeof(double) * (n2+1) * (n3+1), cudaMemcpyDeviceToHost);
+
+    // Free device memory
+    cudaFree(d_w1);
+    cudaFree(d_w2);
+}
 double sigmoid(double x) {
     return 1.0 / (1.0 + exp(-x));
 }
-
-double relu(double x)
-{
-    return (x > 0) ? x : 0;
+__global__ void perceptron_kernel(double *out1, double *w1, double *in2, double *out2, double *w2, double *in3, double *out3, int n1, int n2, int n3) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (i < n2) {
+        in2[i+1] = 0.0;
+        for (int j = 1; j <= n1; ++j) {
+            in2[i+1] += out1[j] * w1[j*n2 + i];
+        }
+        out2[i+1] = sigmoid(in2[i+1]);
+    }
+    
+    if (i < n3) {
+        in3[i+1] = 0.0;
+        for (int j = 1; j <= n2; ++j) {
+            in3[i+1] += out2[j] * w2[j*n3 + i];
+        }
+        out3[i+1] = sigmoid(in3[i+1]);
+    }
 }
-
-double relu_derivative(double x)
-{
-    return (x > 0) ? 1 : 0;
-}
-
-// +------------------------------+
-// | Forward process - Perceptron |
-// +------------------------------+
 
 void perceptron() {
-    for (int i = 1; i <= n2; ++i) {
-		in2[i] = 0.0;
-	}
-
-    for (int i = 1; i <= n3; ++i) {
-		in3[i] = 0.0;
-	}
-
-    for (int i = 1; i <= n1; ++i) {
-        for (int j = 1; j <= n2; ++j) {
-            in2[j] += out1[i] * w1[i][j];
-		}
-	}
-
-    for (int i = 1; i <= n2; ++i) {
-		out2[i] = relu(in2[i]);
-	}
-
-    for (int i = 1; i <= n2; ++i) {
-        for (int j = 1; j <= n3; ++j) {
-            in3[j] += out2[i] * w2[i][j];
-		}
-	}
-
-    for (int i = 1; i <= n3; ++i) {
-		out3[i] = relu(in3[i]);
-	}
+    double *d_out1, *d_w1, *d_in2, *d_out2, *d_w2, *d_in3, *d_out3;
+    
+    // Allocate device memory
+    cudaMalloc(&d_out1, (n1+1)*sizeof(double));
+    cudaMalloc(&d_w1, (n1*n2+1)*sizeof(double));
+    cudaMalloc(&d_in2, (n2+1)*sizeof(double));
+    cudaMalloc(&d_out2, (n2+1)*sizeof(double));
+    cudaMalloc(&d_w2, (n2*n3+1)*sizeof(double));
+    cudaMalloc(&d_in3, (n3+1)*sizeof(double));
+    cudaMalloc(&d_out3, (n3+1)*sizeof(double));
+    
+    // Copy data to device memory
+    cudaMemcpy(d_out1, out1, (n1+1)*sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w1, w1[0], (n1*n2+1)*sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w2, w2[0], (n2*n3+1)*sizeof(double), cudaMemcpyHostToDevice);
+    
+    // Define block and grid sizes
+    int block_size = 256;
+    int num_blocks = (n2 + block_size - 1) / block_size;
+    
+    // Call kernel to compute Layer 2
+    perceptron_kernel<<<num_blocks, block_size>>>(d_out1, d_w1, d_in2, d_out2, d_w2, d_in3, d_out3, n1, n2, n3);
+    
+    // Copy data back to host memory
+    cudaMemcpy(out2, d_out2, (n2+1)*sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(out3, d_out3, (n3+1)*sizeof(double), cudaMemcpyDeviceToHost);
+    
+    // Free device memory
+    cudaFree(d_out1);
+    cudaFree(d_w1);
+    cudaFree(d_in2);
+    cudaFree(d_out2);
+    cudaFree(d_w2);
+    cudaFree(d_in3);
+    cudaFree(d_out3);
 }
-
-// +---------------+
-// | Norm L2 error |
-// +---------------+
-
 double square_error(){
     double res = 0.0;
     for (int i = 1; i <= n3; ++i) {
@@ -221,11 +231,6 @@ double square_error(){
     res *= 0.5;
     return res;
 }
-
-// +----------------------------+
-// | Back Propagation Algorithm |
-// +----------------------------+
-
 void back_propagation() {
     double sum;
 
@@ -256,10 +261,6 @@ void back_propagation() {
 	}
 }
 
-// +-------------------------------------------------+
-// | Learning process: Perceptron - Back propagation |
-// +-------------------------------------------------+
-
 int learning_process() {
     for (int i = 1; i <= n1; ++i) {
         for (int j = 1; j <= n2; ++j) {
@@ -282,10 +283,6 @@ int learning_process() {
     }
     return epochs;
 }
-
-// +--------------------------------------------------------------+
-// | Reading input - gray scale image and the corresponding label |
-// +--------------------------------------------------------------+
 
 void input() {
 	// Reading image

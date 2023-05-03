@@ -1,0 +1,86 @@
+*n1* is the number of neurons in the input layer, where width and height
+are the dimensions of the input image. 
+
+*n2* is the number of neurons in the hidden layer.
+
+n3 is the number of neurons in the output layer, which corresponds to the number of classes in the classification problem. In this case, there are 10 classes: 0-9.
+
+epochs is the number of times the entire training set is processed by 
+the neural network during training.
+
+learning_rate is a hyperparameter that controls the step size at each iteration
+of the optimization algorithm. It determines how quickly the weights of the 
+neural network are updated.
+
+momentum is a hyperparameter that controls the influence of the previous weight updates on the current weight update.
+It is used to speed up convergence and avoid getting stuck in local optima.
+
+epsilon is a small value used to avoid numerical instability when computing gradients or other mathematical operations that involve small numbers.
+
+Bias Nueron: It is a special type of neuron that has a fixed value of 1 and 
+is connected to all the neurons in the next layer.
+The purpose of a bias neuron is to shift the activation function of the 
+neurons in the next layer to the left or right
+
+Expected: a 1D array of expected output values for the output layer.
+Expected[i] represents the expected output value for the ith neuron in the output layer.
+
+Notes: 
+we use the init_weights_kernel kernel function to initialize the weights in 
+parallel. The dimBlock and dimGrid variables define the number of threads 
+and thread blocks to be used in the kernel execution. Here, we use a 16x16
+thread block and a grid with enough blocks to cover all the weights. 
+The ceil() function is used to ensure that we have enough blocks to cover
+all the weights, even if n1 and n2 are not evenly divisible by 16.
+
+
+Define the problem: Decide which for loop(s) to parallelize and identify the data that will be processed within the loop(s).
+
+Allocate memory: Allocate memory on the GPU for the input and output data.
+
+Transfer data: Transfer the input data from the host (CPU) to the device (GPU) using cudaMemcpy or similar functions.
+
+Launch kernel: Launch a kernel function that will be executed on the GPU. The kernel function should specify how many threads will be used and which iterations of the for loop each thread will execute.
+
+Process data: Each thread executes its assigned iterations of the for loop in parallel.
+
+Transfer data back: Transfer the output data from the device back to the host using cudaMemcpy or similar functions.
+
+Cleanup: Free any memory allocated on the GPU and destroy the CUDA context.
+
+__global__ void myKernel(float* data, int n) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid < n) {
+    // Compute the new value for data[tid]
+    data[tid] = data[tid] * 2;
+  }
+}
+
+int main() {
+  int n = 1000;
+  float* h_data = (float*)malloc(n * sizeof(float));
+  float* d_data;
+  cudaMalloc(&d_data, n * sizeof(float));
+
+  // Initialize h_data with some values
+  for (int i = 0; i < n; i++) {
+    h_data[i] = i;
+  }
+
+  // Transfer h_data to d_data
+  cudaMemcpy(d_data, h_data, n * sizeof(float), cudaMemcpyHostToDevice);
+
+  // Launch kernel with 256 threads per block
+  int blockSize = 256;
+  int numBlocks = (n + blockSize - 1) / blockSize;
+  myKernel<<<numBlocks, blockSize>>>(d_data, n);
+
+  // Transfer d_data back to h_data
+  cudaMemcpy(h_data, d_data, n * sizeof(float), cudaMemcpyDeviceToHost);
+
+  // Free memory
+  free(h_data);
+  cudaFree(d_data);
+
+  return 0;
+}
